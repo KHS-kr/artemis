@@ -576,6 +576,76 @@ export class SystemService {
       })
     );
   }
+
+  /**
+   * Local coding-agent CLI backends (Claude Code / Codex), which run on the
+   * user's subscription instead of an API key.
+   */
+  public cliBackends = signal<CliBackend[]>([]);
+  public activeCliBackend = signal<string | null>(null);
+
+  /**
+   * List the CLI backends and whether each binary is on PATH. Presence is all
+   * this reports: proving the CLI is signed in costs a real model call, which
+   * `testCliBackend` does only when the user asks.
+   */
+  public fetchCliBackends(): Observable<CliBackendsResponse> {
+    return this.http.get<CliBackendsResponse>('/api/system/cli-backends').pipe(
+      tap({
+        next: (res) => {
+          this.cliBackends.set(res.backends ?? []);
+          this.activeCliBackend.set(res.active ?? null);
+        },
+        error: (err) => console.error('Failed to list CLI backends:', err)
+      })
+    );
+  }
+
+  /** Spend one real call to prove the CLI is installed and signed in. */
+  public testCliBackend(provider: string): Observable<CliBackendTestResponse> {
+    return this.http.post<CliBackendTestResponse>('/api/system/cli-backends/test', { provider });
+  }
+
+  /** Route every agent node at a CLI backend, or pass null to clear it. */
+  public selectCliBackend(provider: string | null): Observable<any> {
+    return this.http.post<any>('/api/system/cli-backends/select', { provider }).pipe(
+      tap({
+        next: (res) => {
+          this.activeCliBackend.set(res?.active ?? null);
+          if (res?.report) {
+            this.applyReadinessReport(res.report);
+          }
+          this.fetchCliBackends().subscribe();
+          this.fetchModelConfigEnv().subscribe();
+        },
+        error: (err) => console.error('Failed to select CLI backend:', err)
+      })
+    );
+  }
+}
+
+export interface CliBackend {
+  provider: string;
+  label: string;
+  binary: string;
+  available: boolean;
+  reason: string;
+  config_path: string;
+  active: boolean;
+}
+
+export interface CliBackendsResponse {
+  backends: CliBackend[];
+  active: string | null;
+  explorer_version: string;
+}
+
+export interface CliBackendTestResponse {
+  status: string;
+  provider: string;
+  message: string;
+  reply: string;
+  usage: { input_tokens: number; output_tokens: number };
 }
 
 export interface ModelConfigEnvResponse {

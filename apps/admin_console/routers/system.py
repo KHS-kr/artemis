@@ -370,6 +370,199 @@ async def update_credentials(request: UpdateCredentialsRequest):
         raise HTTPException(status_code=500, detail=f"Failed to update credentials: {exc}")
 
 
+# ---------------------------------------------------------------------------
+# Local coding-agent CLI backends
+# ---------------------------------------------------------------------------
+
+#: Config file that routes every node at each CLI backend.
+_CLI_BACKEND_CONFIGS: dict[str, str] = {
+    "claude_cli": "config/llm-config.claude-cli.jsonc",
+    "codex_cli": "config/llm-config.codex-cli.jsonc",
+}
+
+_CLI_BACKEND_LABELS: dict[str, str] = {
+    "claude_cli": "Claude Code CLI",
+    "codex_cli": "Codex CLI",
+}
+
+#: Cheapest model per backend for the liveness test. Codex is pinned rather
+#: than left to the account default, which a stale CLI is refused by.
+_CLI_BACKEND_TEST_MODELS: dict[str, str] = {
+    "claude_cli": "haiku",
+    "codex_cli": "gpt-5.5",
+}
+
+#: The Explorer's `flash` tier is one-shot pixel grounding and needs a Gemini ER
+#: model; `pro` derives coordinates from real accessibility-tree bounds, so it
+#: is the tier that works with no Google key at all.
+_CLI_EXPLORER_VERSION = "pro"
+
+
+class SelectCliBackendRequest(BaseModel):
+    provider: str | None = Field(
+        default=None,
+        description="'claude_cli' or 'codex_cli'; null clears the selection.",
+    )
+
+
+class TestCliBackendRequest(BaseModel):
+    provider: str = Field(..., description="'claude_cli' or 'codex_cli'.")
+
+
+def _invalidate_model_display_cache() -> None:
+    """Drop the console's cached "active model" so a switch shows immediately.
+
+    The cache is a class attribute, and this package is importable as both
+    ``admin_console`` and ``apps.admin_console`` - the frozen binary and the
+    repo checkout put it under different roots. Python treats those as two
+    modules with two independent classes, so clearing one leaves the other
+    serving the old model for the rest of its TTL. Every loaded variant is
+    cleared; none is imported that was not already in use.
+    """
+    import sys
+
+    for module_name in (
+        "admin_console.services.model_service",
+        "apps.admin_console.services.model_service",
+    ):
+        module = sys.modules.get(module_name)
+        service = getattr(module, "ModelService", None) if module else None
+        if service is not None:
+            service._llm_info_cache = None
+
+
+def _active_cli_backend() -> str | None:
+    """Which CLI backend the configured override currently selects, if any."""
+    from artemis.config.llm import configured_override_path
+
+    override = configured_override_path()
+    if override is None:
+        return None
+    name = override.name
+    for provider, path in _CLI_BACKEND_CONFIGS.items():
+        if name == path.rsplit("/", 1)[-1]:
+            return provider
+    return None
+
+
+@router.get("/cli-backends")
+async def list_cli_backends():
+    """Report each local coding-agent CLI backend and whether it can be used.
+
+    Only presence on PATH is checked here: verifying the sign-in means spending
+    a real model call, which must not happen every time the setup screen is
+    opened. ``/cli-backends/test`` does that on demand.
+    """
+    from artemis.llm.cli import check_cli_backend, cli_binary_for
+
+    active = _active_cli_backend()
+    backends = []
+    for provider, config_path in _CLI_BACKEND_CONFIGS.items():
+        available, reason = check_cli_backend(provider)
+        backends.append(
+            {
+                "provider": provider,
+                "label": _CLI_BACKEND_LABELS[provider],
+                "binary": cli_binary_for(provider),
+                "available": available,
+                "reason": reason,
+                "config_path": config_path,
+                "active": provider == active,
+            }
+        )
+    return {
+        "backends": backends,
+        "active": active,
+        "explorer_version": _CLI_EXPLORER_VERSION,
+    }
+
+
+@router.post("/cli-backends/test")
+async def test_cli_backend(request: TestCliBackendRequest):
+    """Spend one real call to prove the CLI is installed AND signed in.
+
+    A binary on PATH says nothing about authentication, and a signed-out CLI
+    would otherwise only surface mid-task.
+    """
+    provider = request.provider.strip().lower()
+    if provider not in _CLI_BACKEND_CONFIGS:
+        raise HTTPException(status_code=400, detail=f"Unknown CLI backend {provider!r}.")
+
+    from langchain_core.messages import HumanMessage
+
+    from artemis.llm.cli import CLIInvocationError
+    from artemis.llm.router import ModelEndpoint, ModelFactory, ModelProvider
+
+    model = ModelFactory.create_model(
+        ModelEndpoint(
+            provider=ModelProvider.from_string(provider),
+            model_name=_CLI_BACKEND_TEST_MODELS[provider],
+        )
+    )
+    try:
+        reply = await model.ainvoke([HumanMessage(content="Reply with the single word: ok")])
+    except CLIInvocationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"CLI backend test failed: {exc}")
+
+    usage = getattr(reply, "usage_metadata", None) or {}
+    return {
+        "status": "success",
+        "provider": provider,
+        "message": f"{_CLI_BACKEND_LABELS[provider]} answered; the CLI is installed and signed in.",
+        "reply": str(getattr(reply, "content", ""))[:200],
+        "usage": {
+            "input_tokens": usage.get("input_tokens", 0),
+            "output_tokens": usage.get("output_tokens", 0),
+        },
+    }
+
+
+@router.post("/cli-backends/select")
+async def select_cli_backend(request: SelectCliBackendRequest):
+    """Route every agent node at a CLI backend, or clear the selection.
+
+    Written to .env rather than held in memory: the task that consumes it runs
+    in a separate daemon worker process.
+    """
+    from artemis.config import settings
+    from artemis.config.constants import ENV_ARTEMIS_EXPLORER_VERSION, ENV_ARTEMIS_LLM_CONFIG
+
+    provider = (request.provider or "").strip().lower() or None
+    if provider is not None and provider not in _CLI_BACKEND_CONFIGS:
+        raise HTTPException(status_code=400, detail=f"Unknown CLI backend {provider!r}.")
+
+    if provider is None:
+        settings.set_env_value(ENV_ARTEMIS_LLM_CONFIG, "")
+        settings.set_env_value(ENV_ARTEMIS_EXPLORER_VERSION, "")
+        message = "CLI backend cleared; the model config in artemis.jsonc applies again."
+    else:
+        from artemis.llm.cli import check_cli_backend
+
+        available, reason = check_cli_backend(provider)
+        if not available:
+            raise HTTPException(status_code=400, detail=reason)
+        settings.set_env_value(ENV_ARTEMIS_LLM_CONFIG, _CLI_BACKEND_CONFIGS[provider])
+        # Not optional: `flash` would ask this model for pixel coordinates.
+        settings.set_env_value(ENV_ARTEMIS_EXPLORER_VERSION, _CLI_EXPLORER_VERSION)
+        message = (
+            f"{_CLI_BACKEND_LABELS[provider]} selected; every agent node now runs on it, "
+            f"with the Explorer pinned to '{_CLI_EXPLORER_VERSION}'."
+        )
+
+    _invalidate_model_display_cache()
+
+    readiness_engine.invalidate_cache()
+    updated_report = await readiness_engine.run_all(force_refresh=True)
+    return {
+        "status": "success",
+        "message": message,
+        "active": provider,
+        "report": updated_report,
+    }
+
+
 @router.get("/model-config-env")
 async def get_model_config_and_env():
     """Retrieve the current active artemis.jsonc configuration and .env status for custom setup."""

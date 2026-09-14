@@ -18,7 +18,7 @@ import { Component, signal, computed, effect, inject, OnInit, OnDestroy, ChangeD
 import { FormsModule } from '@angular/forms';
 import { Router, RouterLink } from '@angular/router';
 import { AgentService } from '../../services/agent.service';
-import { SystemService } from '../../services/system.service';
+import { SystemService, CliBackend } from '../../services/system.service';
 import {
   AdbServerConnectionResult,
   AdbServerDevice,
@@ -99,6 +99,9 @@ export type { AppReference, SmartSuggestion, SuggestionCategory };
 
 type AdbGuideTab = 'emulator' | 'usb' | 'wifi' | 'remote';
 
+/** Which AI model setup card is open. */
+type ModelSetupMode = 'gemini' | 'local-cli' | 'custom';
+
 
 @Component({
   selector: 'app-home',
@@ -121,13 +124,23 @@ export class HomeComponent implements OnInit, OnDestroy {
   public activeAdbGuideTab = signal<AdbGuideTab>('emulator');
   public emulatorSetupMode = signal<'studio' | 'cli'>('studio');
 
-  // Interactive guide tab for LLM / OCR credentials: 'gemini' | 'ocr'
-  public modelSetupMode = signal<'gemini' | 'custom'>('gemini');
+  // Interactive guide tab for LLM / OCR credentials
+  public modelSetupMode = signal<ModelSetupMode>('gemini');
   public showOcrConfig = signal<boolean>(false);
   public showFullConfigFile = signal<boolean>(false);
 
   // Model & Environment configuration from backend
   public modelConfigEnv = computed(() => this.systemService.modelConfigEnv());
+
+  // Local coding-agent CLI backends (Claude Code / Codex): no API key, the
+  // signed-in binary spends the user's subscription.
+  public cliBackends = computed(() => this.systemService.cliBackends());
+  public activeCliBackend = computed(() => this.systemService.activeCliBackend());
+  public selectedCliBackend = signal<string>('claude_cli');
+  public testingCliBackend = signal<string | null>(null);
+  public applyingCliBackend = signal<string | null>(null);
+  public cliBackendMessage = signal<string | null>(null);
+  public cliBackendError = signal<string | null>(null);
 
   // Google Gemini API Key State
   public geminiKeyInput = signal<string>('');
@@ -581,14 +594,95 @@ export class HomeComponent implements OnInit, OnDestroy {
     this.emulatorSetupMode.set(mode);
   }
 
-  public setModelSetupMode(mode: 'gemini' | 'custom'): void {
+  public setModelSetupMode(mode: ModelSetupMode): void {
     this.modelSetupMode.set(mode);
     if (mode === 'custom') {
       this.systemService.setSkipCredentialsCheck(true);
       this.systemService.fetchModelConfigEnv().subscribe();
+    } else if (mode === 'local-cli') {
+      // A CLI backend is a credential of its own, so the missing-API-key
+      // banner would be wrong here.
+      this.systemService.setSkipCredentialsCheck(true);
+      this.cliBackendMessage.set(null);
+      this.cliBackendError.set(null);
+      this.systemService.fetchCliBackends().subscribe({
+        next: (res) => {
+          if (res?.active) {
+            this.selectedCliBackend.set(res.active);
+          }
+        }
+      });
     } else {
       this.systemService.setSkipCredentialsCheck(false);
     }
+  }
+
+  public selectCliBackendOption(provider: string): void {
+    this.selectedCliBackend.set(provider);
+    this.cliBackendMessage.set(null);
+    this.cliBackendError.set(null);
+  }
+
+  public cliBackendFor(provider: string): CliBackend | null {
+    return this.cliBackends().find(b => b.provider === provider) || null;
+  }
+
+  /** Prove the CLI is signed in, not merely installed. Costs one real call. */
+  public testCliBackend(provider: string): void {
+    this.testingCliBackend.set(provider);
+    this.cliBackendMessage.set(null);
+    this.cliBackendError.set(null);
+    this.systemService.testCliBackend(provider).subscribe({
+      next: (res) => {
+        this.testingCliBackend.set(null);
+        this.cliBackendMessage.set(res?.message || 'CLI backend answered.');
+        setTimeout(() => this.cliBackendMessage.set(null), 6000);
+      },
+      error: (err) => {
+        this.testingCliBackend.set(null);
+        this.cliBackendError.set(
+          err?.error?.detail || err?.message || 'CLI backend test failed.'
+        );
+      }
+    });
+  }
+
+  public applyCliBackend(provider: string): void {
+    this.applyingCliBackend.set(provider);
+    this.cliBackendMessage.set(null);
+    this.cliBackendError.set(null);
+    this.systemService.selectCliBackend(provider).subscribe({
+      next: (res) => {
+        this.applyingCliBackend.set(null);
+        this.cliBackendMessage.set(res?.message || 'CLI backend applied.');
+        setTimeout(() => this.cliBackendMessage.set(null), 8000);
+      },
+      error: (err) => {
+        this.applyingCliBackend.set(null);
+        this.cliBackendError.set(
+          err?.error?.detail || err?.message || 'Could not apply the CLI backend.'
+        );
+      }
+    });
+  }
+
+  public clearCliBackend(): void {
+    this.applyingCliBackend.set('__clear__');
+    this.cliBackendMessage.set(null);
+    this.cliBackendError.set(null);
+    this.systemService.selectCliBackend(null).subscribe({
+      next: (res) => {
+        this.applyingCliBackend.set(null);
+        this.cliBackendMessage.set(res?.message || 'CLI backend cleared.');
+        setTimeout(() => this.cliBackendMessage.set(null), 6000);
+      },
+      error: (err) => {
+        this.applyingCliBackend.set(null);
+        this.cliBackendError.set(
+          err?.error?.detail || err?.message || 'Could not clear the CLI backend.'
+        );
+      }
+    });
   }
 
   public toggleFullConfigFile(): void {

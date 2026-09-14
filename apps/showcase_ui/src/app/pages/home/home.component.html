@@ -298,7 +298,7 @@
       <div class="step-title-row">
         <h3 class="step-title">AI Model Setup</h3>
       </div>
-      <p class="step-desc">Google Gemini or custom LLM providers (OpenAI, Claude, Ollama)</p>
+      <p class="step-desc">Google Gemini, a local CLI subscription (Claude Code / Codex), or custom providers</p>
     </div>
   </div>
 
@@ -335,7 +335,28 @@
         </div>
       </div>
 
-      <!-- Card 2: Custom Configuration -->
+      <!-- Card 2: Local CLI Subscription -->
+      <div class="choice-card" [class.selected]="modelSetupMode() === 'local-cli'"
+        (click)="setModelSetupMode('local-cli')">
+        <div class="choice-card-top">
+          <div class="choice-radio">
+            <span class="radio-dot" [class.checked]="modelSetupMode() === 'local-cli'"></span>
+          </div>
+          <div class="choice-icon-wrap icon-gear">
+            <span class="material-symbols-outlined">terminal</span>
+          </div>
+          <div class="choice-text">
+            <div class="choice-title-row">
+              <span class="choice-title">Local CLI Subscription</span>
+              <span class="tag-badge tag-rec">No API key</span>
+            </div>
+            <p class="choice-desc">Drive every agent node through your signed-in
+              <code>claude</code> or <code>codex</code> CLI.</p>
+          </div>
+        </div>
+      </div>
+
+      <!-- Card 3: Custom Configuration -->
       <div class="choice-card" [class.selected]="modelSetupMode() === 'custom'" (click)="setModelSetupMode('custom')">
         <div class="choice-card-top">
           <div class="choice-radio">
@@ -538,6 +559,104 @@
         </div>
       </div>
       }
+    </div>
+    } @else if (modelSetupMode() === 'local-cli') {
+    <!-- LOCAL CLI SUBSCRIPTION -->
+    <div class="credentials-input-box">
+      <div class="input-box-header">
+        <div class="header-label">
+          <span class="material-symbols-outlined label-icon">terminal</span>
+          <span>Pick a locally installed CLI:</span>
+        </div>
+        @if (activeCliBackend()) {
+        <button type="button" class="btn-header-link" (click)="clearCliBackend()"
+          [disabled]="applyingCliBackend() !== null">
+          <span class="material-symbols-outlined">restart_alt</span>
+          <span>Back to config/artemis.jsonc</span>
+        </button>
+        }
+      </div>
+
+      <div class="model-choice-cards-row">
+        @for (backend of cliBackends(); track backend.provider) {
+        <div class="choice-card" [class.selected]="selectedCliBackend() === backend.provider"
+          (click)="selectCliBackendOption(backend.provider)">
+          <div class="choice-card-top">
+            <div class="choice-radio">
+              <span class="radio-dot" [class.checked]="selectedCliBackend() === backend.provider"></span>
+            </div>
+            <div class="choice-text">
+              <div class="choice-title-row">
+                <span class="choice-title">{{ backend.label }}</span>
+                @if (backend.active) {
+                <span class="tag-badge tag-rec">Active</span>
+                }
+              </div>
+              <p class="choice-desc">
+                @if (backend.available) {
+                <span class="status-dot dot-pass"></span>
+                } @else {
+                <span class="status-dot"></span>
+                }
+                {{ backend.reason }}
+              </p>
+            </div>
+          </div>
+        </div>
+        }
+      </div>
+
+      <div class="unified-key-row">
+        <button type="button" class="btn-unified-save"
+          [disabled]="applyingCliBackend() !== null || !cliBackendFor(selectedCliBackend())?.available"
+          (click)="applyCliBackend(selectedCliBackend())">
+          @if (applyingCliBackend() === selectedCliBackend()) {
+          <span class="material-symbols-outlined spin">sync</span>
+          <span>Applying...</span>
+          } @else {
+          <span class="material-symbols-outlined">save</span>
+          <span>Use this backend</span>
+          }
+        </button>
+
+        <button type="button" class="btn-unified-test"
+          title="Spend one real call to confirm the CLI is installed AND signed in"
+          [disabled]="testingCliBackend() !== null || !cliBackendFor(selectedCliBackend())?.available"
+          (click)="testCliBackend(selectedCliBackend())">
+          @if (testingCliBackend() === selectedCliBackend()) {
+          <span class="material-symbols-outlined spin">sync</span>
+          <span>Testing...</span>
+          } @else {
+          <span class="material-symbols-outlined">network_check</span>
+          <span>Test sign-in</span>
+          }
+        </button>
+      </div>
+
+      @if (cliBackendMessage()) {
+      <p class="save-feedback feedback-ok">{{ cliBackendMessage() }}</p>
+      }
+      @if (cliBackendError()) {
+      <p class="save-feedback feedback-err">{{ cliBackendError() }}</p>
+      }
+
+      <p class="ocr-help-desc">
+        Applying writes <code>ARTEMIS_LLM_CONFIG</code> and
+        <code>ARTEMIS_EXPLORER_VERSION=pro</code> to your <code>.env</code>, so the
+        daemon worker that runs each task picks them up too. Artemis strips
+        provider API keys from the CLI's environment, so calls spend your
+        subscription rather than switching to metered API billing.
+      </p>
+      <p class="ocr-help-desc">
+        <strong>What changes:</strong> the Explorer is pinned to its
+        <code>pro</code> tier, which reads coordinates from the accessibility
+        tree instead of asking a model for pixels — that is what lets this run
+        with no Google key. Screens that publish no accessibility nodes
+        (Canvas, Compose, Flutter) lose coordinate grounding; point
+        <code>object_detector</code> back at a Gemini ER model if you need them.
+        Codex costs roughly 23x the input tokens and 8x the latency of Claude
+        per call.
+      </p>
     </div>
     } @else {
           <!-- CUSTOM CONFIGURATION & .ENV INSPECTOR (NO OCR HERE) -->

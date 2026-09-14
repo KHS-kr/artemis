@@ -262,52 +262,70 @@ class Settings(BaseSettings):
             os.environ[ENV_VISION_API_KEY] = key
 
         if persist_to_env and env_key_name:
-            target_env_files = [get_env_file()]
-            seen_paths = set()
-            for env_file in target_env_files:
-                try:
-                    env_file.parent.mkdir(parents=True, exist_ok=True)
-                    resolved = env_file.resolve()
-                    if resolved in seen_paths:
-                        continue
-                    seen_paths.add(resolved)
+            # Determine keys to update
+            keys_to_update = [env_key_name]
+            if is_google_family_provider(provider_lower):
+                keys_to_update = [ENV_GEMINI_API_KEY, ENV_GOOGLE_API_KEY, ENV_GCP_API_KEY]
+            elif provider_lower in ("ocr", "vision", "google_vision"):
+                keys_to_update = [ENV_OCR_API_KEY, ENV_VISION_API_KEY]
 
-                    lines = []
-                    if env_file.exists():
-                        lines = env_file.read_text(encoding="utf-8").splitlines()
+            # Aliases are rewritten only where they already exist; the primary
+            # key is the one guaranteed to end up in the file.
+            persist_env_values({k: key for k in keys_to_update}, ensure={keys_to_update[0]})
 
-                    # Determine keys to update
-                    keys_to_update = [env_key_name]
-                    if is_google_family_provider(provider_lower):
-                        keys_to_update = [ENV_GEMINI_API_KEY, ENV_GOOGLE_API_KEY, ENV_GCP_API_KEY]
-                    elif provider_lower in ("ocr", "vision", "google_vision"):
-                        keys_to_update = [ENV_OCR_API_KEY, ENV_VISION_API_KEY]
+    def set_env_value(self, name: str, value: str) -> None:
+        """Set one non-secret setting for this process and persist it to .env.
 
-                    new_lines = []
-                    updated_set = set()
-                    for line in lines:
-                        replaced = False
-                        for k in keys_to_update:
-                            if (
-                                line.startswith(f"{k}=")
-                                or line.startswith(f"#{k}=")
-                                or line.startswith(f"# {k}=")
-                            ):
-                                new_lines.append(f"{k}={key}")
-                                updated_set.add(k)
-                                replaced = True
-                                break
-                        if not replaced:
-                            new_lines.append(line)
+        Values that steer a whole run without being credentials - which backend
+        the model config points at, which Explorer tier is active - have to
+        reach the daemon worker that executes the task, so they travel as
+        environment variables rather than as attributes of this object.
+        """
+        os.environ[name] = value
+        if hasattr(self, name):
+            setattr(self, name, value or None)
+        persist_env_values({name: value}, ensure={name})
 
-                    # Ensure the primary key is present if not replaced
-                    primary_key = keys_to_update[0]
-                    if primary_key not in updated_set:
-                        new_lines.append(f"{primary_key}={key}")
 
-                    env_file.write_text("\n".join(new_lines) + "\n", encoding="utf-8")
-                except Exception as e:
-                    logger.warning(f"Could not persist {env_key_name} to {env_file}: {e}")
+def persist_env_values(values: dict[str, str], *, ensure: set[str] | None = None) -> None:
+    """Upsert ``KEY=value`` lines into the app's .env file.
+
+    An existing entry is rewritten in place, commented-out or not, so a
+    template's ``# KEY=`` placeholder becomes the real setting rather than a
+    duplicate below it. Keys named in ``ensure`` are appended when no line
+    matched; the rest are only rewritten where they already exist, which is how
+    provider aliases avoid littering the file.
+    """
+    env_file = get_env_file()
+    must_exist = set(ensure or ())
+    try:
+        env_file.parent.mkdir(parents=True, exist_ok=True)
+        lines = env_file.read_text(encoding="utf-8").splitlines() if env_file.exists() else []
+
+        new_lines: list[str] = []
+        updated: set[str] = set()
+        for line in lines:
+            replaced = False
+            for key, value in values.items():
+                if (
+                    line.startswith(f"{key}=")
+                    or line.startswith(f"#{key}=")
+                    or line.startswith(f"# {key}=")
+                ):
+                    new_lines.append(f"{key}={value}")
+                    updated.add(key)
+                    replaced = True
+                    break
+            if not replaced:
+                new_lines.append(line)
+
+        for key in values:
+            if key in must_exist and key not in updated:
+                new_lines.append(f"{key}={values[key]}")
+
+        env_file.write_text("\n".join(new_lines) + "\n", encoding="utf-8")
+    except OSError as e:
+        logger.warning(f"Could not persist {sorted(values)} to {env_file}: {e}")
 
 
 # Singleton instance
