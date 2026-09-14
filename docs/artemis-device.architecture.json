@@ -1,0 +1,339 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "ARTEMIS 실기기 테스트 실행 구조",
+    "quality_profile": "showcase",
+    "views": [
+      {
+        "id": "device-acquire",
+        "label": "기기 확보",
+        "focus": [
+          "mcp",
+          "lock",
+          "runner"
+        ],
+        "note": "MCP 진입부터 기기당 1태스크 FIFO 락을 얻어 러너 프로세스가 뜨기까지."
+      },
+      {
+        "id": "turn-loop",
+        "label": "턴 루프",
+        "focus": [
+          "perception",
+          "brain",
+          "validator"
+        ],
+        "note": "매 턴 화면을 새로 관측하고 결정한 뒤 안전망을 거쳐 실행하는 순환."
+      },
+      {
+        "id": "observe-path",
+        "label": "관측 경로",
+        "focus": [
+          "helper",
+          "perception"
+        ],
+        "note": "폰의 접근성 헬퍼가 토큰으로 보호된 forward 터널 너머로 계층을 내보낸다."
+      },
+      {
+        "id": "act-path",
+        "label": "실행 경로",
+        "focus": [
+          "validator",
+          "driver",
+          "device"
+        ],
+        "note": "정규화 좌표가 픽셀로 환산되어 adb shell input 명령으로 기기에 닿는다."
+      },
+      {
+        "id": "artifacts",
+        "label": "산출물",
+        "focus": [
+          "driver",
+          "traces"
+        ],
+        "note": "scrcpy 녹화와 스텝 캡처가 세션 트레이스로 쌓인다."
+      }
+    ]
+  },
+  "components": [
+    {
+      "id": "mcp",
+      "type": "frontend",
+      "label": "MCP 서버",
+      "sublabel": "mobile_run_task",
+      "pos": [
+        40,
+        110
+      ],
+      "size": [
+        170,
+        70
+      ]
+    },
+    {
+      "id": "lock",
+      "type": "backend",
+      "label": "DevicePool · 실행 락",
+      "sublabel": "기기당 1태스크 FIFO",
+      "tag": "크로스 프로세스",
+      "pos": [
+        280,
+        110
+      ],
+      "size": [
+        170,
+        70
+      ]
+    },
+    {
+      "id": "perception",
+      "type": "backend",
+      "label": "Perception",
+      "sublabel": "매 턴 화면 재관측",
+      "pos": [
+        760,
+        110
+      ],
+      "size": [
+        170,
+        70
+      ]
+    },
+    {
+      "id": "helper",
+      "type": "security",
+      "label": "접근성 헬퍼",
+      "sublabel": "com.artemis.helper",
+      "tag": "X-Artemis-Token",
+      "pos": [
+        1060,
+        110
+      ],
+      "size": [
+        170,
+        70
+      ]
+    },
+    {
+      "id": "runner",
+      "type": "backend",
+      "label": "러너 프로세스",
+      "sublabel": "SDK Agent 세션",
+      "tag": "ADB_DEVICE_SERIAL",
+      "pos": [
+        280,
+        330
+      ],
+      "size": [
+        170,
+        70
+      ]
+    },
+    {
+      "id": "brain",
+      "type": "backend",
+      "label": "Operator",
+      "sublabel": "Pro 그래프 · Flash 루프",
+      "pos": [
+        520,
+        330
+      ],
+      "size": [
+        170,
+        70
+      ]
+    },
+    {
+      "id": "validator",
+      "type": "backend",
+      "label": "Validator",
+      "sublabel": "실행 전 안전망",
+      "tag": "XML → 픽셀 폴백",
+      "pos": [
+        760,
+        330
+      ],
+      "size": [
+        170,
+        70
+      ]
+    },
+    {
+      "id": "device",
+      "type": "external",
+      "label": "Android 실기기",
+      "sublabel": "USB 디버깅 · 잠금 해제",
+      "pos": [
+        1060,
+        330
+      ],
+      "size": [
+        170,
+        70
+      ]
+    },
+    {
+      "id": "traces",
+      "type": "database",
+      "label": "세션 트레이스",
+      "sublabel": "스텝 캡처 · MP4",
+      "pos": [
+        280,
+        550
+      ],
+      "size": [
+        170,
+        70
+      ]
+    },
+    {
+      "id": "driver",
+      "type": "backend",
+      "label": "AndroidAdbDriver",
+      "sublabel": "정규화 0~1000 → 픽셀",
+      "pos": [
+        760,
+        550
+      ],
+      "size": [
+        170,
+        70
+      ]
+    }
+  ],
+  "boundaries": [
+    {
+      "kind": "region",
+      "label": "호스트 PC",
+      "wraps": [
+        "mcp",
+        "lock",
+        "runner",
+        "brain",
+        "perception",
+        "validator",
+        "driver",
+        "traces"
+      ]
+    },
+    {
+      "kind": "region",
+      "label": "Android 실기기",
+      "wraps": [
+        "helper",
+        "device"
+      ]
+    }
+  ],
+  "connections": [
+    {
+      "id": "reserve",
+      "from": "mcp",
+      "to": "lock",
+      "label": "기기 선택"
+    },
+    {
+      "id": "grant",
+      "from": "lock",
+      "to": "runner",
+      "label": "점유 후 spawn",
+      "fromSide": "bottom",
+      "toSide": "top",
+      "labelDy": 70
+    },
+    {
+      "id": "session",
+      "from": "runner",
+      "to": "brain",
+      "label": "세션 준비",
+      "variant": "emphasis"
+    },
+    {
+      "id": "inject",
+      "from": "perception",
+      "to": "brain",
+      "label": "화면 상태 주입",
+      "fromSide": "left",
+      "toSide": "top"
+    },
+    {
+      "id": "decide",
+      "from": "brain",
+      "to": "validator",
+      "label": "액션 JSON",
+      "variant": "emphasis"
+    },
+    {
+      "id": "vetted",
+      "from": "validator",
+      "to": "driver",
+      "label": "안전망 통과 후 실행",
+      "variant": "emphasis",
+      "fromSide": "bottom",
+      "toSide": "top",
+      "labelDy": 70
+    },
+    {
+      "id": "act",
+      "from": "driver",
+      "to": "device",
+      "label": "adb shell input tap/swipe",
+      "variant": "emphasis"
+    },
+    {
+      "id": "observe",
+      "from": "helper",
+      "to": "perception",
+      "label": "adb forward :18888",
+      "variant": "security"
+    },
+    {
+      "id": "next-turn",
+      "from": "validator",
+      "to": "perception",
+      "label": "다음 턴 재관측",
+      "variant": "dashed",
+      "fromSide": "top",
+      "toSide": "bottom"
+    },
+    {
+      "id": "record",
+      "from": "driver",
+      "to": "traces",
+      "label": "scrcpy 녹화 · 스텝 캡처",
+      "variant": "dashed"
+    }
+  ],
+  "cards": [
+    {
+      "dot": "cyan",
+      "title": "진입과 기기 확보",
+      "items": [
+        "MCP는 러너 프로세스를 spawn만 한다",
+        "serial 생략 시 DevicePool이 유휴 기기 할당",
+        "실행 락은 파일 기반 FIFO, stale 락은 PID로 배제",
+        "다른 기기는 병렬, 같은 기기는 대기"
+      ]
+    },
+    {
+      "dot": "emerald",
+      "title": "턴 루프",
+      "items": [
+        "Pro: planner → perception → operator → validator",
+        "Flash: 단일 LLM 관측-사고-행동 루프",
+        "관측이 매 턴 앞단 — 화면을 추측하지 않는다",
+        "단일 액션은 안전망 검증, 2개 이상은 버스트"
+      ]
+    },
+    {
+      "dot": "violet",
+      "title": "실기기 제약",
+      "items": [
+        "헬퍼 우선, 실패 시에만 UIAutomator2 폴백",
+        "UiAutomation이 살아 있으면 헬퍼가 unbind된다",
+        "keyguard가 잠겨 있으면 실행 자체가 거부된다",
+        "파일 반출은 adb pull이 별도로 필요"
+      ]
+    }
+  ]
+}
