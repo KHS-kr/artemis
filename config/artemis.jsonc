@@ -45,6 +45,27 @@
       "provider": "openai",
       "model": "llama3.2-vision",
       "fallback": { "provider": "openai", "model": "llama3.2-vision" }
+    },
+    // Subscription-backed local CLIs: no API key at all, ARTEMIS shells out to
+    // the signed-in binary. Switching a whole run over takes two env vars —
+    //   ARTEMIS_LLM_CONFIG=config/llm-config.claude-cli.jsonc
+    //   ARTEMIS_EXPLORER_VERSION=pro
+    // — and those files, not these presets, are what you want: they also remap
+    // the optional nodes, which otherwise fall back to Gemini defaults. The
+    // `pro` Explorer tier is required because `flash` is one-shot pixel
+    // grounding and needs the ER model named below; `pro` derives coordinates
+    // from real accessibility-tree bounds instead.
+    "claude-cli": {
+      "provider": "claude_cli",
+      "model": "sonnet",
+      "reasoning_effort": "medium",
+      "fallback": { "provider": "claude_cli", "model": "haiku" }
+    },
+    "codex-cli": {
+      "provider": "codex_cli",
+      "model": "gpt-5.5",
+      "reasoning_effort": "low",
+      "fallback": { "provider": "codex_cli", "model": "gpt-5.5" }
     }
   },
 

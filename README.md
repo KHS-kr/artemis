@@ -199,6 +199,56 @@ In Codex, Antigravity, or Claude Code, simply prompt:
 
 </details>
 
+<a id="cli-backend"></a>
+<details>
+<summary><b>Run with no API keys at all, on a Claude Code / Codex CLI subscription (Click to expand)</b></summary>
+
+<br>
+
+ARTEMIS can drive every agent node through a locally installed coding-agent CLI, spending your **Claude Code or Codex subscription** instead of a provider API key — no `GEMINI_API_KEY`, no `OCR_API_KEY`, no Google account. The CLI is used as a stateless one-shot text/vision model, not as a coding agent, and plugs in as an ordinary provider, so fallback chains, token metering, tracing and the LangGraph nodes above it are unchanged.
+
+```bash
+# 1. Make sure the CLI is installed and signed in
+claude          # once, to sign in    (or: codex login)
+
+# 2. Point a run at it
+export ARTEMIS_LLM_CONFIG=config/llm-config.claude-cli.jsonc
+export ARTEMIS_EXPLORER_VERSION=pro      # required — see below
+uv run artemis run --profile flash "Open Settings and tell me the battery level"
+
+# `artemis init` writes both lines into .env for you, where the daemon worker
+# picks them up too. Verify with `uv run artemis doctor`.
+```
+
+**`ARTEMIS_EXPLORER_VERSION=pro` is the one thing you must not skip.** Point grounding is the single capability that does not transfer to a general-purpose model. The Explorer's `flash` tier is one-shot visual detection — it asks the model for a normalized `[x, y]` and taps it — and that needs a Gemini **ER** (Embodied Reasoning / Robotics) model. Driving the same detector prompt with Claude Sonnet on a synthetic 1080×2340 screen:
+
+| target | mean error | within 5% of truth |
+| --- | --- | --- |
+| large, high-contrast shapes | 0.01 | 2/2 |
+| dense settings rows and toggles | 0.38 | 0/5 |
+
+0.38 normalized is several hundred pixels: it taps the wrong row, confidently. Rewording the contract (named `x`/`y` fields instead of the positional `[y, x]` array) does not rescue it — 0.33, still 0/5. So ARTEMIS logs a warning whenever detection runs on a non-ER model rather than letting a guess pass as a measurement.
+
+The `pro` tier is not a downgrade, it is a different mechanism: its `ask_perception_tool` fuzzy-searches the accessibility/OCR screen index and returns coordinates computed from each element's real `bounds`, so the model only chooses which labelled candidate matches. Nothing guesses pixels, and no vision model is involved. That is what makes a keyless run work, and it is also the path ARTEMIS already uses for 85%+ of actions. (Do not use `ultra` here — it re-exposes one-shot detection plus OCR tools that want a Google Vision key.)
+
+**What you give up:** custom-rendered UI (Canvas, Compose, Flutter) that publishes no accessibility nodes. There the tree is empty and only pixel grounding would work. If you need those screens, `object_detector` is the single node to point back at `gemini-robotics-er-2-preview` — the shipped config has the block commented in place — and the only reason to hold a Google key.
+
+**Other things worth knowing:**
+
+* **Subscription windows, not rate limits.** A Pro-profile run makes hundreds of model calls. The Claude CLI reports its 5-hour and 7-day windows on every call; ARTEMIS warns past 90% and fails over to the node's fallback once a window is spent. Prefer `--profile flash`.
+* **Cost is not symmetric.** `codex exec` has no equivalent of `--system-prompt` or `--safe-mode`, so it ships its full coding-agent instructions on every call. Same prompt, measured:
+
+  | backend | input tokens / call | wall clock / call |
+  | --- | --- | --- |
+  | `claude_cli` | ~1,200 | ~1.6 s |
+  | `codex_cli` | ~27,800 | ~13.4 s |
+
+* **No native tool calling.** Neither CLI exposes function calling to its caller, so tools are injected as a prompt contract and parsed back from a JSON envelope (Codex hard-enforces it via `--output-schema`).
+* **Your subscription, not your API key.** ARTEMIS strips `ANTHROPIC_API_KEY`, `OPENAI_API_KEY` and friends from the CLI's environment, so a key sitting in `.env` cannot silently switch the call to metered API billing. Set `ARTEMIS_CLI_INHERIT_API_KEYS=1` to opt out.
+* **No recursion.** The child runs with `--safe-mode --tools "" --strict-mcp-config`, so it loads no `CLAUDE.md`, no skills and no MCP servers — including the ARTEMIS MCP server that `artemis mcp --install claude` configures, which a child could otherwise call back into.
+
+</details>
+
 <a id="python-sdk"></a>
 <details>
 <summary><b>Python SDK Integration (Click to expand)</b></summary>

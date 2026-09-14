@@ -1127,6 +1127,66 @@ def get_llm(
     return RobustChatModelWrapper(bound_model, ctx, endpoint=endpoint)  # type: ignore
 
 
+def resolve_lens_endpoint(
+    ctx: ArtemisContext,
+    node: str,
+    *,
+    is_utils: bool = False,
+    model_override: str | None = None,
+    temperature: float | None = 0.0,
+) -> ModelEndpoint:
+    """Resolve the endpoint for a background lens, honoring a Gemini-only override.
+
+    Background lenses - the Flash step summarizer, the transcript capsule
+    compressor - carry their own model name in the *agent* config
+    (``agent.flash.step_summarizer.model``, ``agent.memory.chunking.model``).
+    Those knobs predate multi-provider support and hold Gemini model names, so
+    they are applied as a model-name override on the node's configured
+    endpoint, never as a reason to switch provider: a Gemini name means
+    nothing to an Anthropic or CLI endpoint. The node's provider always wins.
+    """
+    endpoint = _resolve_endpoint(ctx, node, is_utils=is_utils)
+    if temperature is not None:
+        endpoint = endpoint.model_copy(update={"temperature": temperature})
+    if not model_override or model_override == endpoint.model_name:
+        return endpoint
+    if is_google_provider(endpoint.provider):
+        return endpoint.model_copy(update={"model_name": model_override})
+    llm_logger.debug(
+        f"Ignoring lens model override {model_override!r} for node {node!r}: "
+        f"it names a Gemini model and the node resolves to {endpoint.provider}."
+    )
+    return endpoint
+
+
+def get_lens_llm(
+    ctx: ArtemisContext,
+    node: str,
+    *,
+    is_utils: bool = False,
+    model_override: str | None = None,
+    temperature: float | None = 0.0,
+) -> BaseChatModel:
+    """Instantiate a background lens model from its configured node.
+
+    Replaces the historical ``get_google_llm`` bypass, which pinned every lens
+    to the Gemini provider and so aborted any run configured on another one.
+
+    Returns the model **unwrapped**, exactly as that bypass did. Lenses meter
+    themselves through ``record_llm_usage(..., update_last_prompt=False)``
+    because a lens prompt is tiny and must not be mistaken for the session's
+    live context base, which the L2/L3 compaction thresholds read.
+    """
+    endpoint = resolve_lens_endpoint(
+        ctx,
+        node,
+        is_utils=is_utils,
+        model_override=model_override,
+        temperature=temperature,
+    )
+    return ModelFactory.get_model(endpoint)
+
+
 async def with_fallback[T](
     main_call: Callable[[], Awaitable[T]],
     fallback_call: Callable[[], Awaitable[T]],

@@ -1,0 +1,63 @@
+{
+  // ==============================================================================
+  // 🤖 ARTEMIS on the Codex CLI subscription — no API keys at all
+  // ==============================================================================
+  //
+  //   export ARTEMIS_LLM_CONFIG=config/llm-config.codex-cli.jsonc
+  //   export ARTEMIS_EXPLORER_VERSION=pro          # required, see below
+  //   artemis run --profile flash "Open Settings and read the battery level"
+  //
+  // Prerequisite: `codex` on PATH and signed in (`codex login`). No
+  // GEMINI_API_KEY, no OCR_API_KEY, no Google account.
+  //
+  // ⚠️ READ BEFORE USING. Codex costs far more per call than the Claude CLI
+  // backend, because `codex exec` has no equivalent of `--system-prompt` or
+  // `--safe-mode`: it ships its full coding-agent instructions every time.
+  // Measured on codex-cli 0.137.0 against the Claude backend, same prompt:
+  //
+  //     backend      input tokens / call     wall clock / call
+  //     claude_cli   ~1,200                  ~1.6 s
+  //     codex_cli    ~27,800                 ~13.4 s
+  //
+  // Roughly 23x the input tokens and 8x the latency. Use this when you
+  // specifically want Codex's judgment; for a mixed setup, copy individual
+  // nodes from here into the Claude config instead of switching wholesale.
+  //
+  // ⚠️ ARTEMIS_EXPLORER_VERSION=pro is not optional. The Explorer's `flash`
+  // tier is one-shot pixel grounding and needs a Gemini ER model; `pro` derives
+  // coordinates from the accessibility tree's real element bounds instead. The
+  // Claude config's header documents the measurements behind that.
+  //
+  // `model` is pinned rather than left to the account default because
+  // codex-cli 0.137.0 is rejected by newer default models ("requires a newer
+  // version of Codex"). Upgrade the CLI, then raise this to your current model.
+
+  "default": {
+    "provider": "codex_cli",
+    "model": "gpt-5.5",
+    "reasoning_effort": "low",
+    "fallback": { "provider": "codex_cli", "model": "gpt-5.5" }
+  },
+
+  "nodes": {
+    // Only the nodes whose judgment justifies the extra reasoning tokens.
+    "planner": { "reasoning_effort": "medium" },
+    "checker": { "reasoning_effort": "medium" },
+    "diagnoser_expert": { "reasoning_effort": "medium" },
+
+    // Optional nodes: named explicitly so they do not fall back to the
+    // Gemini-specific built-in defaults.
+    "history_analyzer": { "reasoning_effort": "low" },
+    "validator_pixel_safety_net": { "reasoning_effort": "low" },
+    "planner_validation": { "reasoning_effort": "low" },
+    "output_analyzer": { "reasoning_effort": "low" },
+
+    "video_analyzer": {},
+
+    // 👁️ Object Detector: inherits codex_cli, so no Google key is needed. Never
+    // called under ARTEMIS_EXPLORER_VERSION=pro. See the Claude config for how
+    // to point this one node back at a Gemini ER model if you need pixel
+    // grounding on Canvas/Compose/Flutter screens.
+    "object_detector": {}
+  }
+}

@@ -23,6 +23,7 @@ from google.auth.exceptions import DefaultCredentialsError
 from pydantic import BaseModel, ValidationError
 
 from artemis.config.constants import (
+    ENV_ARTEMIS_LLM_CONFIG,
     LLM_CONFIG_FILENAME,
     AgentNode,
     LLMProvider,
@@ -100,6 +101,14 @@ class LLM(BaseModel):
         elif self.provider == "xai":
             if not settings.XAI_API_KEY:
                 raise Exception(f"{name} requires XAI_API_KEY in .env")
+        elif self.provider in ("claude_cli", "codex_cli"):
+            # Subscription-backed CLIs carry no API key to check; what has to
+            # exist is the binary itself.
+            from artemis.llm.cli import check_cli_backend
+
+            available, reason = check_cli_backend(self.provider)
+            if not available:
+                raise Exception(f"{name} uses the {self.provider} backend but {reason}")
 
     def __str__(self) -> str:
         return f"{self.provider}/{self.model}"
@@ -269,33 +278,103 @@ def _expand_default_into_nodes(config_dict: dict) -> dict:
         "object_detector",
     ]
 
+    # Nodes that stay unset unless asked for: LLMConfig.get_agent resolves each
+    # to a purpose-built default (a cheap flash-lite judge, or another node's
+    # model). Expanding 'default' into them would silently promote high-frequency
+    # judges to the flagship model, so they are only filled in when the config
+    # names them - which a non-Gemini setup must do, since those defaults are
+    # Gemini-specific.
+    optional_agent_nodes = [
+        "history_analyzer",
+        "validator_pixel_safety_net",
+        "planner_validation",
+        "output_analyzer",
+    ]
+
+    def _merge_node(base: dict, override: dict) -> dict:
+        merged = dict(base)
+        for k, v in override.items():
+            if isinstance(v, dict) and isinstance(merged.get(k), dict):
+                merged[k] = {**merged[k], **v}
+            else:
+                merged[k] = v
+        return merged
+
     result: dict[str, Any] = {}
     for node in all_agent_nodes:
         node_cfg = dict(default_model_cfg)
         if node in nodes_override:
-            for k, v in nodes_override[node].items():
-                if isinstance(v, dict) and isinstance(node_cfg.get(k), dict):
-                    node_cfg[k] = {**node_cfg[k], **v}
-                else:
-                    node_cfg[k] = v
+            node_cfg = _merge_node(node_cfg, nodes_override[node])
         result[node] = node_cfg
+
+    for node in optional_agent_nodes:
+        if node in nodes_override:
+            result[node] = _merge_node(dict(default_model_cfg), nodes_override[node])
 
     utils_dict: dict[str, Any] = {}
     for util in all_utils_nodes:
         util_cfg = dict(default_model_cfg)
         if util in nodes_override:
-            for k, v in nodes_override[util].items():
-                if isinstance(v, dict) and isinstance(util_cfg.get(k), dict):
-                    util_cfg[k] = {**util_cfg[k], **v}
-                else:
-                    util_cfg[k] = v
+            util_cfg = _merge_node(util_cfg, nodes_override[util])
         utils_dict[util] = util_cfg
     result["utils"] = utils_dict
 
     return result
 
 
+def normalize_override_dict(overrides: dict) -> dict:
+    """Expand an override file written in the ``default`` / ``nodes`` shorthand.
+
+    ``deep_merge_llm_config`` merges onto a fully expanded ``LLMConfig``, so a
+    file using the shorthand would otherwise contribute two keys the schema
+    ignores and change nothing. Expanding first is also the semantics a
+    backend switch wants: ``default`` lands on every node at once.
+    """
+    if "default" in overrides or "nodes" in overrides:
+        return _expand_default_into_nodes(overrides)
+    return overrides
+
+
+def configured_override_path() -> Path | None:
+    """The LLM config override requested by env var or ``.env``, if any."""
+    raw = os.environ.get(ENV_ARTEMIS_LLM_CONFIG) or settings.ARTEMIS_LLM_CONFIG
+    if not raw or not str(raw).strip():
+        return None
+    candidate = Path(str(raw).strip())
+    if candidate.exists():
+        return candidate
+    try:
+        return Path(get_config_path(str(candidate)))
+    except OSError:
+        logger.warning(
+            f"{ENV_ARTEMIS_LLM_CONFIG}={raw!r} does not point at an existing file; ignoring it."
+        )
+        return None
+
+
 def parse_llm_config() -> LLMConfig:
+    """Parse the LLM config, applying any configured override on top.
+
+    The base file is artemis.jsonc (or llm-config.json); when
+    ``ARTEMIS_LLM_CONFIG`` names another file, it is deep-merged over that
+    base so every entry point - CLI, batch, daemon worker, doctor - agrees on
+    which backend a run uses.
+    """
+    base = _parse_base_llm_config()
+    override_path = configured_override_path()
+    if override_path is None:
+        return base
+    logger.info(f"Applying LLM config override from {override_path}")
+    try:
+        with open(override_path, encoding="utf-8") as f:
+            overrides = normalize_override_dict(load_jsonc(f))
+        return deep_merge_llm_config(base, overrides)
+    except (OSError, ValueError, ValidationError) as e:
+        logger.error(f"Failed to apply LLM config override {override_path}: {e}")
+        raise
+
+
+def _parse_base_llm_config() -> LLMConfig:
     """Parse and instantiate LLMConfig from artemis.jsonc or llm-config.json."""
     config_path = None
     for candidate in ("artemis.jsonc", "artemis.json", LLM_CONFIG_FILENAME):
@@ -361,7 +440,7 @@ def load_llm_config_override(path: Path | str) -> LLMConfig:
     if resolved_path.exists():
         logger.info(f"Loading custom LLM config from {resolved_path.resolve()}...")
         with open(resolved_path, encoding="utf-8") as f:
-            override_config_dict = load_jsonc(f)
+            override_config_dict = normalize_override_dict(load_jsonc(f))
     else:
         logger.warning(f"Custom LLM config not found at {path} - using default config")
 

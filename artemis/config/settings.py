@@ -124,6 +124,9 @@ class Settings(BaseSettings):
     PROJECT_NAME: str | None = None
     ARTEMIS_DEFAULT_PROFILE: str = Field(default=DEFAULT_PROFILE)
     ARTEMIS_DEFAULT_MODEL: str = Field(default=DEFAULT_MODEL)
+    #: Optional LLM config file merged over artemis.jsonc - how a whole run is
+    #: pointed at a different backend (e.g. the Claude Code / Codex CLIs).
+    ARTEMIS_LLM_CONFIG: str | None = None
 
     # Explorer Tool Settings (the tier itself is configured in artemis.jsonc or
     # via ARTEMIS_EXPLORER_VERSION; see artemis.config.agent.ExplorerConfig)

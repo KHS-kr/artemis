@@ -69,6 +69,10 @@ ENV_XAI_API_KEY = "XAI_API_KEY"
 ENV_ARTEMIS_EXPLORER_VERSION = "ARTEMIS_EXPLORER_VERSION"
 ENV_ARTEMIS_DEFAULT_PROFILE = "ARTEMIS_DEFAULT_PROFILE"
 ENV_ARTEMIS_DEFAULT_MODEL = "ARTEMIS_DEFAULT_MODEL"
+#: Path to an LLM config file merged on top of artemis.jsonc. An env var rather
+#: than a CLI flag so it survives the hop into the daemon worker that actually
+#: runs the task.
+ENV_ARTEMIS_LLM_CONFIG = "ARTEMIS_LLM_CONFIG"
 ENV_ARTEMIS_USE_FILE_API = "ARTEMIS_USE_FILE_API"
 
 # Debugging & Output Paths
@@ -119,7 +123,19 @@ DEFAULT_EXPLORER_VERSION: Literal["flash", "pro", "ultra"] = "flash"
 # ==============================================================================
 
 LLMProvider = Literal[
-    "openai", "google", "openrouter", "xai", "vertexai", "anthropic", "ollama", "vllm", "custom"
+    "openai",
+    "google",
+    "openrouter",
+    "xai",
+    "vertexai",
+    "anthropic",
+    "ollama",
+    "vllm",
+    "custom",
+    # Local coding-agent CLIs: authenticated by the user's subscription, so
+    # they need a signed-in binary on PATH rather than an API key.
+    "claude_cli",
+    "codex_cli",
 ]
 ExplorerVersion = Literal["flash", "pro", "ultra"]
 

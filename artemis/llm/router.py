@@ -16,7 +16,9 @@
 
 Provides role-based LLM/VLM dispatching, dynamic fallback chains,
 and unified provider configuration across Gemini, Vertex AI, OpenAI,
-Anthropic, OpenRouter, and local Ollama/vLLM endpoints.
+Anthropic, OpenRouter, local Ollama/vLLM endpoints, and the locally
+installed Claude Code / Codex CLIs (which spend a subscription instead of
+an API key).
 """
 
 from enum import StrEnum
@@ -45,6 +47,10 @@ class ModelProvider(StrEnum):
     OLLAMA = "ollama"
     VLLM = "vllm"
     CUSTOM = "custom"
+    # Locally installed coding-agent CLIs, driven as one-shot chat models and
+    # authenticated by the user's subscription rather than an API key.
+    CLAUDE_CLI = "claude_cli"
+    CODEX_CLI = "codex_cli"
 
     @classmethod
     def from_string(cls, val: Any) -> "ModelProvider":
@@ -75,6 +81,10 @@ class ModelProvider(StrEnum):
             "ollama": cls.OLLAMA,
             "vllm": cls.VLLM,
             "custom": cls.CUSTOM,
+            "claudecli": cls.CLAUDE_CLI,
+            "claudecode": cls.CLAUDE_CLI,
+            "codexcli": cls.CODEX_CLI,
+            "codex": cls.CODEX_CLI,
         }
         provider = mapping.get(s)
         if provider is None:
@@ -193,6 +203,26 @@ def _patch_langchain_google_genai():
         ChatGoogleGenerativeAI._is_artemis_patched = True
     except Exception as e:
         logger.warning(f"Could not patch ChatGoogleGenerativeAI._process_tool_config: {e}")
+
+
+#: A CLI call pays process startup plus the agent's own preamble, so the
+#: 60s HTTP default is not a usable ceiling: measured cold calls are ~1.6s for
+#: claude and ~13s for codex, and both grow with screenshot payloads. These are
+#: floors, not overrides - a config asking for longer is honored - and
+#: ARTEMIS_CLI_TIMEOUT_S replaces them outright.
+_CLAUDE_CLI_MIN_TIMEOUT_S = 180.0
+_CODEX_CLI_MIN_TIMEOUT_S = 600.0
+
+
+def _cli_timeout(endpoint: "ModelEndpoint", is_claude: bool) -> float:
+    override = os.environ.get("ARTEMIS_CLI_TIMEOUT_S")
+    if override:
+        try:
+            return float(override)
+        except ValueError:
+            logger.warning(f"Ignoring non-numeric ARTEMIS_CLI_TIMEOUT_S={override!r}")
+    floor = _CLAUDE_CLI_MIN_TIMEOUT_S if is_claude else _CODEX_CLI_MIN_TIMEOUT_S
+    return max(endpoint.timeout_seconds, floor)
 
 
 class ModelFactory:
@@ -365,6 +395,22 @@ class ModelFactory:
                 base_url=endpoint.api_base or "https://api.x.ai/v1",
                 timeout=endpoint.timeout_seconds,
             )
+
+        elif provider in (ModelProvider.CLAUDE_CLI, ModelProvider.CODEX_CLI):
+            from artemis.llm.cli import ChatClaudeCLI, ChatCodexCLI
+
+            is_claude = provider == ModelProvider.CLAUDE_CLI
+            cli_cls = ChatClaudeCLI if is_claude else ChatCodexCLI
+            kwargs = {
+                # Thinking level and reasoning effort are the same knob to a
+                # CLI, which exposes one effort flag; either config field feeds it.
+                "reasoning_effort": endpoint.reasoning_effort or endpoint.thinking_level,
+                "enable_grounding": endpoint.enable_grounding,
+                "timeout_seconds": _cli_timeout(endpoint, is_claude),
+            }
+            if endpoint.model_name:
+                kwargs["model_name"] = endpoint.model_name
+            return cli_cls(**{k: v for k, v in kwargs.items() if v is not None})
 
         elif provider in (ModelProvider.OLLAMA, ModelProvider.VLLM, ModelProvider.CUSTOM):
             from langchain_openai import ChatOpenAI

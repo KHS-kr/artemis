@@ -906,6 +906,13 @@ def test_cli_doctor_json_shape_and_ready_verdict(monkeypatch):
     import json
 
     _install_doctor_fakes(monkeypatch, _all_pass_probes())
+    # The model-configuration row reports the config that was actually parsed,
+    # and adds one row per CLI backend that config routes to. Pin it to the
+    # stock config so the extras set does not depend on the developer's env.
+    from artemis.config.settings import settings
+
+    monkeypatch.delenv("ARTEMIS_LLM_CONFIG", raising=False)
+    monkeypatch.setattr(settings, "ARTEMIS_LLM_CONFIG", None)
 
     result = runner.invoke(app, ["doctor", "--json"])
     assert result.exit_code == 0, result.output
@@ -926,9 +933,11 @@ def test_cli_doctor_json_shape_and_ready_verdict(monkeypatch):
         assert set(check) == {"id", "title", "status", "required", "summary", "detail", "fix"}
         assert check["status"] == "pass"
         assert check["fix"] == []
-    assert set(doc["extras"]) == {"nodejs_npm", "showcase_ui"}
+    assert set(doc["extras"]) == {"llm_config", "nodejs_npm", "showcase_ui"}
     assert doc["extras"]["nodejs_npm"]["status"] == "pass"
     assert doc["extras"]["showcase_ui"]["status"] == "missing"
+    assert doc["extras"]["llm_config"]["status"] == "pass"
+    assert "artemis.jsonc" in doc["extras"]["llm_config"]["detail"]
 
 
 def test_cli_doctor_json_blocked_verdict_and_exit_code(monkeypatch):

@@ -322,18 +322,22 @@ class StepCapsuleLens(StepLens):
             )
 
     def _get_llm(self):
+        # `agent.memory.chunking.model` names a Gemini model, so it rides the
+        # configured summarizer node as an override rather than forcing a
+        # Google client - which would abort capsule compression outright on a
+        # run configured for any other provider.
         if self._llm is None:
-            from artemis.services.llm import get_google_llm
+            from artemis.services.llm import get_lens_llm
 
-            self._llm = get_google_llm(model_name=self._model_name, temperature=0.0)
+            self._llm = get_lens_llm(self._ctx, "summarizer", model_override=self._model_name)
         return self._llm
 
     def _get_fallback_llm(self):
         if self._fallback_llm is None and self._fallback_model_name:
-            from artemis.services.llm import get_google_llm
+            from artemis.services.llm import get_lens_llm
 
-            self._fallback_llm = get_google_llm(
-                model_name=self._fallback_model_name, temperature=0.0
+            self._fallback_llm = get_lens_llm(
+                self._ctx, "summarizer", model_override=self._fallback_model_name
             )
         return self._fallback_llm
 

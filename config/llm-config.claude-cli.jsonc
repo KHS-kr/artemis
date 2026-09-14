@@ -1,0 +1,100 @@
+{
+  // ==============================================================================
+  // 🤖 ARTEMIS on the Claude Code CLI subscription — no API keys at all
+  // ==============================================================================
+  //
+  //   export ARTEMIS_LLM_CONFIG=config/llm-config.claude-cli.jsonc
+  //   export ARTEMIS_EXPLORER_VERSION=pro          # required, see below
+  //   artemis run --profile flash "Open Settings and read the battery level"
+  //
+  // (or put both in .env, which also reaches the daemon worker)
+  //
+  // Prerequisite: `claude` on PATH and signed in (run `claude` once, or
+  // `claude /login`). No GEMINI_API_KEY, no OCR_API_KEY, no Google account.
+  //
+  // ARTEMIS strips ANTHROPIC_API_KEY from the CLI's environment so calls spend
+  // the subscription instead of silently switching to metered API billing. Set
+  // ARTEMIS_CLI_INHERIT_API_KEYS=1 to opt out.
+  //
+  // ------------------------------------------------------------------------------
+  // ⚠️ ARTEMIS_EXPLORER_VERSION=pro is not optional here
+  // ------------------------------------------------------------------------------
+  // The Explorer's `flash` tier is one-shot visual detection: it asks the model
+  // for a normalized [x, y] point and taps it. That needs a Gemini ER (Embodied
+  // Reasoning / Robotics) model. Measured on a synthetic 1080x2340 settings list
+  // with claude sonnet driving the same detector prompt:
+  //
+  //     large high-contrast targets    mean error 0.01   (usable)
+  //     dense list rows and toggles    mean error 0.38   0/5 within 5% of truth
+  //
+  // 0.38 normalized is several hundred pixels — it taps the wrong row, and does
+  // so confidently. Rewording the contract (named x/y fields instead of the
+  // positional [y, x] array) does not help: 0.33, still 0/5.
+  //
+  // The `pro` tier is not a downgrade, it is a different mechanism: its
+  // `ask_perception_tool` fuzzy-searches the accessibility/OCR screen index and
+  // returns coordinates computed from each element's real `bounds`. The model
+  // only chooses which labelled candidate matches — no pixel guessing. That is
+  // the path this config is built around, and it needs no vision model.
+  //
+  // Do not use `ultra` here: it re-exposes `detect_objects`, the same one-shot
+  // detection, plus OCR tools that want a Google Vision key.
+  //
+  // What you give up: custom-rendered UI (Canvas, Compose, Flutter) that exposes
+  // no accessibility nodes. There the tree is empty and only pixel grounding
+  // would work, so those screens need a Gemini ER key — see the note at the end.
+
+  // Applied to every node; `nodes` below only states the exceptions.
+  "default": {
+    "provider": "claude_cli",
+    "model": "sonnet",
+    "reasoning_effort": "medium",
+    "fallback": { "provider": "claude_cli", "model": "haiku" }
+  },
+
+  "nodes": {
+    // 🧠 Planner: goal decomposition, one call per milestone edit.
+    "planner": { "reasoning_effort": "high" },
+
+    // 🩺 Diagnostics. `enable_grounding` maps to the CLI's WebSearch tool.
+    "diagnoser_expert": { "reasoning_effort": "high", "enable_grounding": true },
+    "log_analyzer": { "enable_grounding": true },
+
+    // High-frequency, low-judgment nodes: keep them on the cheapest model.
+    "summarizer": { "model": "haiku", "reasoning_effort": "low" },
+    "operator_summarizer": { "model": "haiku", "reasoning_effort": "low" },
+    "log_reader_sub_agent": { "model": "haiku", "reasoning_effort": "low" },
+    "hopper": { "model": "haiku", "reasoning_effort": "low" },
+
+    // Optional nodes. These MUST be named explicitly: left unset, ARTEMIS
+    // resolves them to Gemini-specific built-in defaults, which would demand a
+    // Google API key on every action taken.
+    "history_analyzer": { "model": "haiku", "reasoning_effort": "low" },
+    // Runs before every turn-ending action.
+    "validator_pixel_safety_net": { "model": "haiku", "reasoning_effort": "low" },
+    // Runs after every milestone edit.
+    "planner_validation": { "model": "haiku", "reasoning_effort": "low" },
+    "output_analyzer": { "model": "haiku", "reasoning_effort": "low" },
+
+    // 🎬 Video Analyzer: the native Gemini Files path needs a Gemini model and
+    // a Google key, so a non-Gemini model here routes to the universal engine
+    // (keyframe extraction + multimodal tool calling) automatically.
+    "video_analyzer": {},
+
+    // 👁️ Object Detector: inherits claude_cli from `default`, so nothing here
+    // needs a Google key. With ARTEMIS_EXPLORER_VERSION=pro it is never called
+    // — `pro` exposes no detection tool. It stays configured only so the
+    // `flash` / `ultra` tiers fail soft rather than raising, and ARTEMIS logs a
+    // warning when a non-ER model is asked for coordinates.
+    //
+    // If you do need pixel grounding for Canvas/Compose/Flutter screens, this
+    // is the single node to point back at Google, and the only reason to hold a
+    // key:
+    //   "object_detector": {
+    //     "provider": "google",
+    //     "model": "gemini-robotics-er-2-preview",
+    //     "fallback": { "provider": "google", "model": "gemini-robotics-er-2-preview" }
+    //   }
+    "object_detector": {}
+  }
+}

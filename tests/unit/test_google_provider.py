@@ -18,6 +18,7 @@ from artemis.llm.google import (
     gemini_version,
     is_agentic_video_auto_eligible,
     is_gemini_model,
+    is_spatial_grounding_model,
     is_google_chat_model,
     is_google_family_provider,
     is_google_provider,
@@ -144,3 +145,24 @@ def test_resolve_video_processing_honours_knob_and_capability():
     assert resolve_video_processing(None, "gemini-3.8-flash") == "agentic"
     assert resolve_video_processing(object(), "gemini-3.8-flash") == "agentic"
     assert resolve_video_processing("bogus", "gemini-3.5-flash-lite") == "static"
+
+
+@pytest.mark.parametrize(
+    "model, spatial",
+    [
+        ("gemini-robotics-er-2-preview", True),
+        ("google/gemini-robotics-er-2-preview", True),
+        ("GEMINI-ROBOTICS-ER-2-PREVIEW", True),
+        # Standard chat models answer "point to this" confidently and wrongly,
+        # so they must not be mistaken for grounding models.
+        ("gemini-3.8-flash", False),
+        ("gemini-2.5-pro", False),
+        ("claude-sonnet-5", False),
+        ("sonnet", False),
+        ("gpt-5.5", False),
+        ("", False),
+        (None, False),
+    ],
+)
+def test_only_the_er_family_is_a_spatial_grounding_model(model, spatial):
+    assert is_spatial_grounding_model(model) is spatial

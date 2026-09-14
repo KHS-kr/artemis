@@ -100,6 +100,22 @@ def is_gemini_model(model_name: Any) -> bool:
     return "gemini" in strip_provider_prefix(model_name).lower()
 
 
+#: Marker of the Gemini ER (Embodied Reasoning / Robotics) family, the only
+#: models fine-tuned for sub-pixel point and bounding-box localization.
+_SPATIAL_GROUNDING_MARKERS = ("robotics-er", "robotics_er")
+
+
+def is_spatial_grounding_model(model_name: Any) -> bool:
+    """True for models trained to return precise normalized [x, y] coordinates.
+
+    Standard chat models - Gemini Flash included, and Claude and GPT with it -
+    answer the "point to this element" prompt confidently and inaccurately, so
+    a caller that taps the result needs to know the difference.
+    """
+    name = strip_provider_prefix(model_name).lower()
+    return any(marker in name for marker in _SPATIAL_GROUNDING_MARKERS)
+
+
 def _is_release_suffix(rest: str) -> bool:
     """Whether what follows the tier is a release suffix (see the module docstring)."""
     if not rest:

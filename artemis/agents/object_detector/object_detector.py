@@ -23,6 +23,7 @@ import re
 
 from langchain_core.messages import HumanMessage, ToolMessage
 
+from artemis.llm.google import is_spatial_grounding_model
 from artemis.llm.structured import ParseFailure, parse_structured
 from artemis.services.llm import get_llm
 from artemis.utils.logger import get_logger
@@ -30,6 +31,36 @@ from artemis.utils.logger import get_logger
 logger = get_logger(__name__)
 
 _DETECTOR_SEMAPHORE = asyncio.Semaphore(6)
+
+#: Models already warned about, so a long run logs the caveat once per model.
+_NON_SPATIAL_WARNED: set[str] = set()
+
+
+def _warn_once_if_not_spatial(llm) -> None:
+    """Warn when the detector model is not trained for coordinate localization.
+
+    Point grounding is the one capability that does not transfer: a standard
+    chat model returns a confident, wrong coordinate rather than an error, so
+    the caller taps the wrong element. Silence here would make that
+    indistinguishable from a working detector.
+    """
+    model_name = str(
+        getattr(llm, "model_name", None)
+        or getattr(llm, "model", None)
+        or (getattr(llm, "endpoint", None) and getattr(llm.endpoint, "model_name", ""))
+        or ""
+    )
+    if not model_name or model_name in _NON_SPATIAL_WARNED:
+        return
+    if is_spatial_grounding_model(model_name):
+        return
+    _NON_SPATIAL_WARNED.add(model_name)
+    logger.warning(
+        f"Object detection is running on {model_name!r}, which is not a Gemini ER "
+        "(Embodied Reasoning) model. Returned coordinates will be approximate and "
+        "may point at the wrong element. Prefer ARTEMIS_EXPLORER_VERSION=pro, whose "
+        "grounding derives coordinates from real accessibility-tree bounds."
+    )
 
 
 async def _detect_single_label(
@@ -123,10 +154,15 @@ async def _run_object_detection(
 
     queries = queries or []
     templates = templates or ["Point to the following objects: {labels_str}"]
+    # object_detector lives under `utils`, so it must be resolved as one:
+    # without is_utils the lookup raises and every detection silently ran on the
+    # operator's model, ignoring the configured (ER) detector entirely.
     try:
-        llm = get_llm(ctx, name="object_detector")
-    except Exception:
+        llm = get_llm(ctx, name="object_detector", is_utils=True)
+    except (ValueError, AttributeError, RuntimeError) as e:
+        logger.debug(f"No object_detector configured ({e}); using the operator model.")
         llm = get_llm(ctx, name="operator")
+    _warn_once_if_not_spatial(llm)
 
     raw_timeout = getattr(getattr(ctx, "llm_config", None), "timeout", None)
     if isinstance(raw_timeout, (int, float)):

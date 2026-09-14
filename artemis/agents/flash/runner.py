@@ -83,7 +83,6 @@ from artemis.memory.transcript import PRO_UI_LIST_MARKER, TranscriptLedger, mark
 from artemis.services.llm import (
     RobustChatModelWrapper,
     acomplete,
-    get_google_llm,
     get_llm,
     invoke_llm_with_timeout_message,
 )
@@ -282,9 +281,12 @@ class FlashRunner:
         try:
             return get_llm(self.ctx, name="operator")
         except Exception as e:
-            logger.warning(f"Failed to get operator LLM from config, using default: {e}")
-
-            return RobustChatModelWrapper(get_google_llm(model_name="gemini-2.5-flash"), self.ctx)
+            # The operator's own fallback endpoint is the only honest retry
+            # here. Conjuring a Gemini model instead used to replace a clear
+            # config error with a confusing "GOOGLE_API_KEY missing" one on
+            # every run not configured for Google.
+            logger.warning(f"Failed to get operator LLM from config: {e}; trying its fallback.")
+            return get_llm(self.ctx, name="operator", use_fallback=True)
 
     def _render_system_prompt(self, tools_declaration: list) -> str:
         """Renders the system prompt from the flash_runner.md template.

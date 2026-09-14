@@ -147,6 +147,25 @@ class LLMCredentialsProbe(BaseProbe):
         if ocr_key and not is_placeholder_key(ocr_key):
             api_keys_map["ocr"] = ocr_key.get_secret_value()
 
+        # Locally installed coding-agent CLIs are keyless providers: they
+        # authenticate with the user's subscription, so a signed-in binary is
+        # the credential. Appended last so a real API key still wins as the
+        # reported active provider.
+        from artemis.llm.cli import CLI_BINARIES, check_cli_backend
+
+        for provider_id, binary in CLI_BINARIES.items():
+            available, _ = check_cli_backend(provider_id)
+            if available:
+                configured_providers.append(
+                    {
+                        "provider": provider_id,
+                        "label": f"{binary} CLI (subscription)",
+                        "masked": "subscription",
+                        "raw_key": "",
+                        "key": "",
+                    }
+                )
+
         current_active_key = (
             gemini_key.get_secret_value()
             if gemini_key
@@ -204,7 +223,7 @@ class LLMCredentialsProbe(BaseProbe):
                 ],
             )
 
-        # Case 3: No LLM key configured
+        # Case 3: No LLM credential of any kind - no API key, no signed-in CLI
         return ProbeResult(
             id=self.probe_id,
             category=self.category,
@@ -212,7 +231,11 @@ class LLMCredentialsProbe(BaseProbe):
             status=ProbeStatus.FAIL,
             is_blocker=self.is_blocker,
             summary="Key Missing",
-            description="No Multimodal LLM credential (e.g. GEMINI_API_KEY, OPENAI_API_KEY, ANTHROPIC_API_KEY) found in environment or .env file.",
+            description=(
+                "No Multimodal LLM credential (e.g. GEMINI_API_KEY, OPENAI_API_KEY, "
+                "ANTHROPIC_API_KEY) found in environment or .env file, and no "
+                "signed-in Claude Code / Codex CLI found on PATH."
+            ),
             metadata=metadata,
             actions=[
                 ProbeAction(

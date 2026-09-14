@@ -16,8 +16,9 @@
 
 The command renders the same readiness probes the web console's device wizard
 and the ``mobile_diagnose`` MCP tool run (:mod:`artemis.core.diagnostics`), so
-the terminal, the browser and the IDE agree on one verdict. Only two rows are
-CLI-specific and not engine probes: Node.js/npm and the Showcase UI build.
+the terminal, the browser and the IDE agree on one verdict. A few rows are
+CLI-specific and not engine probes: Node.js/npm, the Showcase UI build, and
+which LLM config and coding-agent CLI backends the next run will actually use.
 """
 
 from __future__ import annotations
@@ -36,6 +37,7 @@ from rich.panel import Panel
 from rich.table import Table
 import typer
 
+from artemis.config import configured_override_path, parse_llm_config
 from artemis.config.paths import ROOT_DIR
 from artemis.core.diagnostics.engine import readiness_engine
 from artemis.core.diagnostics.readiness import (
@@ -193,6 +195,93 @@ def _showcase_row() -> ExtraRow:
         summary="Not Compiled",
         detail="Run ./start.sh or artemis ui to auto-compile.",
     )
+
+
+def _iter_llm_nodes(cfg: Any) -> list[tuple[str, Any]]:
+    """Every configured node in an LLMConfig, primaries and fallbacks alike.
+
+    Fallbacks count: a run whose primary is Gemini but whose fallback is a CLI
+    still needs that binary present before the failover fires.
+    """
+    nodes: list[tuple[str, Any]] = []
+
+    def _add(name: str, value: Any) -> None:
+        if value is None:
+            return
+        nodes.append((name, value))
+        fallback = getattr(value, "fallback", None)
+        if fallback is not None:
+            nodes.append((f"{name}.fallback", fallback))
+
+    for field_name in type(cfg).model_fields:
+        if field_name == "utils":
+            continue
+        _add(field_name, getattr(cfg, field_name, None))
+    utils = getattr(cfg, "utils", None)
+    if utils is not None:
+        for field_name in type(utils).model_fields:
+            _add(f"utils.{field_name}", getattr(utils, field_name, None))
+    return nodes
+
+
+def _llm_config_rows() -> list[ExtraRow]:
+    """Which model config is live, and whether its CLI backends can run.
+
+    ARTEMIS_LLM_CONFIG can point a whole run at a different backend, so naming
+    the file that was actually parsed - not just artemis.jsonc - is the
+    difference between a useful row and a misleading one.
+    """
+    try:
+        cfg = parse_llm_config()
+    except Exception as exc:
+        return [
+            ExtraRow(
+                key="llm_config",
+                title="Model Configuration",
+                status="missing",
+                status_markup="[bold red]✖ Error[/bold red]",
+                summary="Unreadable",
+                detail=f"Could not parse the LLM config: {exc}",
+            )
+        ]
+
+    override = configured_override_path()
+    source = str(override) if override else "config/artemis.jsonc"
+    rows = [
+        ExtraRow(
+            key="llm_config",
+            title="Model Configuration",
+            status="pass",
+            status_markup="[bold green]✔ Valid[/bold green]",
+            summary="Valid",
+            detail=f"{source} (Planner: {cfg.planner.provider}/{cfg.planner.model})",
+        )
+    ]
+
+    # Only report a CLI backend the active config actually routes to: an absent
+    # `claude` binary is irrelevant to a run configured for Gemini.
+    from artemis.llm.cli import check_cli_backend, cli_binary_for
+
+    cli_nodes: dict[str, list[str]] = {}
+    for node_name, node_cfg in _iter_llm_nodes(cfg):
+        if cli_binary_for(node_cfg.provider):
+            cli_nodes.setdefault(str(node_cfg.provider), []).append(node_name)
+
+    for provider_id, node_names in sorted(cli_nodes.items()):
+        available, reason = check_cli_backend(provider_id)
+        rows.append(
+            ExtraRow(
+                key=f"cli_backend_{provider_id}",
+                title=f"{cli_binary_for(provider_id)} CLI",
+                status="pass" if available else "missing",
+                status_markup="[bold green]✔ Ready[/bold green]"
+                if available
+                else "[bold red]✖ Missing[/bold red]",
+                summary="Ready" if available else "Missing",
+                detail=f"{reason} — drives {len(node_names)} node(s)",
+            )
+        )
+    return rows
 
 
 def _helper_row(results: list[ProbeResult]) -> ExtraRow | None:
@@ -433,7 +522,7 @@ def doctor_command(
 ) -> None:
     """Run diagnostics to inspect system dependencies, device connectivity, and configuration."""
     results, fixes = asyncio.run(_diagnose(fix))
-    extras = [_npm_row(), _showcase_row()]
+    extras = [*_llm_config_rows(), _npm_row(), _showcase_row()]
     helper_row = _helper_row(results)
     if helper_row is not None:
         extras.append(helper_row)
