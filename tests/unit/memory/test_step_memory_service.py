@@ -261,3 +261,34 @@ async def test_resubmit_clears_failed_state():
 
     assert not service.has_failed("job")
     assert service.get_summary("job") == "second time lucky"
+
+
+class _SilentlyFailingLens(StepLens):
+    """A lens whose failure carries no message - exactly like asyncio timeouts."""
+
+    name = "step_capsule"
+
+    async def render(self, key, payload):
+        raise TimeoutError()
+
+
+@pytest.mark.asyncio
+async def test_failed_attempt_logs_the_exception_type(caplog):
+    """A lens failure must be identifiable even when the exception has no message.
+
+    Regression: a run produced 81 consecutive 'lens attempt failed: ' lines
+    with nothing after the colon, because the handler interpolated only
+    str(e) and the exception was a bare TimeoutError (whose str is empty).
+    The failures were real but left no evidence to diagnose them by.
+    """
+    service = StepMemoryService(Mock(), lens=_SilentlyFailingLens(), retry_limit=0)
+    key = "step-1"
+    service._step_inputs[key] = {"payload": "anything"}
+
+    with caplog.at_level("WARNING"):
+        landed = await service._attempt(key)
+
+    assert landed is False
+    assert "TimeoutError" in caplog.text, (
+        f"failure must name its exception type; got: {caplog.text!r}"
+    )

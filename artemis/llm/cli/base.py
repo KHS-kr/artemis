@@ -63,6 +63,7 @@ from langchain_core.runnables import Runnable, RunnableLambda
 from pydantic import BaseModel, Field
 
 from artemis.llm.cli.envelope import (
+    build_structured_contract,
     build_tool_contract,
     normalize_tools,
     parse_envelope,
@@ -440,13 +441,10 @@ class CLIChatModel(BaseChatModel):
 
     def _prepare(self, messages: Sequence[BaseMessage]) -> RenderedPrompt:
         if self.structured_schema is not None and not self.bound_tools:
-            # with_structured_output parses the reply itself, so all it needs is
-            # a promise of bare JSON.
-            contract = (
-                "## Response format\n"
-                "Reply with a single JSON value and nothing else - no prose outside "
-                "it, no markdown fences."
-            )
+            # with_structured_output parses the reply against the schema, so the
+            # contract has to carry the schema too - a bare "reply with JSON"
+            # lets the model pick its own property names.
+            contract = build_structured_contract(self.structured_schema)
         else:
             contract = build_tool_contract(self.bound_tools, args_as_string=self.args_as_string)
         return render_messages(messages, tool_contract=contract, max_images=self.max_images)

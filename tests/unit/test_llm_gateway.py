@@ -1,5 +1,7 @@
 """Tests for the LLM gateway: complete(), classified recovery, and fallback."""
 
+import asyncio
+
 from types import SimpleNamespace
 
 from langchain_core.messages import AIMessage, AIMessageChunk
@@ -239,3 +241,46 @@ async def test_mid_stream_failure_records_stream_reset_payload(monkeypatch):
     assert payload["reason"] == "mid_stream_failure"
     assert "stream_exec_id" in payload
     assert "lower API priority" in payload["message"]
+
+
+@pytest.mark.asyncio
+async def test_schema_failure_exhausts_without_ever_pausing(monkeypatch):
+    """A model that keeps answering off-schema must fail fast, not park the run.
+
+    Regression: an advisory node (planner_validation) asked for a structured
+    result, the backend answered with a different JSON shape, the failure was
+    classified UNKNOWN, retries exhausted with no fallback configured, and the
+    gateway paused the whole graph waiting for a resume signal that can never
+    fix the model's output. The node's own except-handler, which approves and
+    moves on, was unreachable.
+    """
+    from artemis.llm.structured import ParseFailure, StructuredOutputError
+
+    paused: list[BaseException] = []
+    monkeypatch.setattr(
+        llm_service,
+        "_handle_llm_pause_and_resume",
+        lambda err: paused.append(err) or llm_service.PAUSE_FILE,
+    )
+
+    class AlwaysOffSchema:
+        def __init__(self):
+            self.calls = 0
+
+        async def astream(self, *args, **kwargs):
+            self.calls += 1
+            raise StructuredOutputError(
+                ParseFailure(raw="{'status': 'concern_found'}", error="schema validation failed")
+            )
+            yield  # pragma: no cover - makes this an async generator
+
+    base = AlwaysOffSchema()
+    wrapper = RobustChatModelWrapper(base)
+
+    # Bounded: the defect shows up as a hang (pause deadline, or the endless
+    # retry loop a cleared pause file produces), so a timeout is a failure.
+    with pytest.raises(LLMExhaustedError):
+        await asyncio.wait_for(wrapper.complete([]), timeout=10)
+
+    assert paused == [], "schema failures must never reach the pause/resume path"
+    assert base.calls > 1, "resampling is still worth a retry"

@@ -213,3 +213,16 @@ def get_logger(
         )
 
     return _loggers[name]
+
+
+def describe_exception(error: BaseException) -> str:
+    """Render an exception for a log line, type first.
+
+    ``str(exc)`` alone is a trap: the exceptions that matter most in async
+    plumbing - ``TimeoutError``, ``CancelledError``, a bare ``Exception()`` -
+    stringify to nothing, so a handler that interpolates only the message
+    prints a line that says a failure happened and nothing about which one.
+    """
+    name = type(error).__name__
+    message = str(error)
+    return f"{name}: {message}" if message else name

@@ -27,7 +27,7 @@ import asyncio
 from typing import Any
 
 from artemis.data_engine.trace import detached_trace
-from artemis.utils.logger import get_logger
+from artemis.utils.logger import describe_exception, get_logger
 
 logger = get_logger(__name__)
 
@@ -209,7 +209,10 @@ class StepMemoryService:
         try:
             summary = await self._lens.render(key, payload)
         except Exception as e:
-            logger.warning(f"StepMemoryService: lens '{self._lens.name}' attempt failed: {e}")
+            logger.warning(
+                f"StepMemoryService: lens '{self._lens.name}' attempt failed:"
+                f" {describe_exception(e)}"
+            )
             return False
         if not summary:
             return False

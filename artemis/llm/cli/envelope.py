@@ -291,3 +291,50 @@ def _coerce_tool_call(entry: Any, allowed_names: list[str] | None) -> dict | Non
         "id": entry.get("id") or f"cli-{uuid.uuid4().hex[:12]}",
         "type": "tool_call",
     }
+
+
+def build_structured_contract(schema: Any) -> str:
+    """Render the response contract for a ``with_structured_output`` call.
+
+    The caller validates the reply against ``schema``, so the model has to be
+    told what that schema *is*. Promising only "reply with JSON" leaves the
+    property names to the model's imagination: a run asking for
+    ``ValidationResult{is_approved, feedback}`` kept getting
+    ``{"approval": "approved", ...}`` back - the right judgment under names
+    nothing downstream could parse. Backends that enforce the shape on the
+    wire (Codex, via ``--output-schema``) never needed this; a prompt-contract
+    backend does.
+    """
+    lines = [
+        "## Response format",
+        "Reply with a single JSON value and nothing else - no prose outside "
+        "it, no markdown fences.",
+    ]
+    rendered = schema_as_json(schema)
+    if rendered:
+        lines += [
+            "",
+            "It must validate against this JSON Schema. Use exactly these"
+            " property names - do not rename, add, or omit a required field:",
+            rendered,
+        ]
+    return "\n".join(lines)
+
+
+def schema_as_json(schema: Any) -> str | None:
+    """Best-effort JSON Schema text for a pydantic model or a plain dict.
+
+    Returns ``None`` when the schema cannot be rendered, so the caller can
+    fall back to the bare JSON promise rather than fail the call.
+    """
+    if schema is None:
+        return None
+    if isinstance(schema, dict):
+        return _compact_json(schema)
+    builder = getattr(schema, "model_json_schema", None)
+    if callable(builder):
+        try:
+            return _compact_json(builder())
+        except Exception:  # pragma: no cover - exotic/partial schema objects
+            return None
+    return None

@@ -92,3 +92,36 @@ def test_classifier_recognizes_genai_deadline_exceeded_shapes():
         failure = classify_failure(RuntimeError(message))
         assert failure.category is FailureCategory.TIMEOUT
         assert failure.retryable
+
+
+def test_structured_output_failure_is_retryable_but_never_pausable():
+    """A malformed structured response must not park the graph on the pause file.
+
+    Pausing exists so a human can repair transient infrastructure (an expired
+    key, an exhausted quota) and resume. A model that answered with the wrong
+    JSON shape is not that: no resume signal can change what the model already
+    returned, so the run would hang until the pause deadline. Resampling can
+    still help, so the failure stays retryable and fallback-eligible.
+    """
+    from artemis.llm.structured import ParseFailure, StructuredOutputError
+
+    failure = classify_failure(
+        StructuredOutputError(
+            ParseFailure(raw="{'status': 'concern_found'}", error="schema validation failed")
+        )
+    )
+
+    assert failure.category is FailureCategory.SCHEMA_INVALID
+    assert failure.retryable
+    assert failure.should_fallback
+    assert not failure.pausable
+
+
+def test_infrastructure_failures_stay_pausable():
+    """The categories a human can actually repair keep the pause behaviour."""
+    for error in (
+        RuntimeError("429 rate limit exceeded"),
+        RuntimeError("503 service unavailable"),
+        TimeoutError("request timed out"),
+    ):
+        assert classify_failure(error).pausable

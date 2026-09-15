@@ -38,7 +38,7 @@ from artemis.context import ArtemisContext
 from artemis.memory.step_memory import JobKey, StepMemoryService
 from artemis.services.llm import RobustChatModelWrapper, get_lens_llm, get_llm
 from artemis.services.token_meter import record_llm_usage
-from artemis.utils.logger import get_logger
+from artemis.utils.logger import describe_exception, get_logger
 from artemis.utils.task_tree import format_actions_clean
 from artemis.utils.visualization import draw_action_overlay_on_image
 
@@ -516,6 +516,7 @@ class VisualStepSummarizer(StepMemoryService):
 
         except Exception as e:
             logger.warning(
-                f"VisualStepSummarizer: Error generating summary for step {step_number}: {e}"
+                f"VisualStepSummarizer: Error generating summary for step"
+                f" {step_number}: {describe_exception(e)}"
             )
         return False

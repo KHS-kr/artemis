@@ -485,3 +485,29 @@ def test_a_missing_binary_fails_fast_without_retrying(monkeypatch):
     with pytest.raises(CLIInvocationError) as excinfo:
         ChatClaudeCLI().invoke([HumanMessage(content="hi")])
     assert classify_failure(excinfo.value).retryable is False
+
+
+def test_structured_contract_names_the_schema_fields():
+    """A CLI asked for structured output must be told the field names.
+
+    Regression: the contract promised only "reply with a single JSON value",
+    never the schema, so the model invented plausible-looking keys. A run's
+    planner_validation asked for ValidationResult{is_approved, feedback} and
+    got {'approval': 'approved', ...} every single time - semantically right,
+    structurally unusable, and the node never produced a verdict. Codex is
+    unaffected because it enforces the shape through --output-schema.
+    """
+    from pydantic import BaseModel, Field
+
+    class ValidationResult(BaseModel):
+        is_approved: bool = Field(description="True if the plan still serves the goal.")
+        feedback: str = Field(description="One or two sentences naming the concern.")
+
+    model = ChatClaudeCLI(model_name="sonnet").with_structured_output(ValidationResult)
+    # with_structured_output returns model | parser; the model is the first step.
+    cli_model = model.steps[0] if hasattr(model, "steps") else model.first
+    prompt = cli_model._prepare([HumanMessage(content="review this plan")])
+
+    rendered = json.dumps(prompt, default=str)
+    assert "is_approved" in rendered, "the contract must name the required fields"
+    assert "feedback" in rendered

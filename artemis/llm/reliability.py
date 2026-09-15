@@ -34,6 +34,8 @@ import threading
 import time
 from typing import Any
 
+from artemis.llm.structured import StructuredOutputError
+
 
 class FailureCategory(StrEnum):
     RATE_LIMIT = "rate_limit"
@@ -42,6 +44,7 @@ class FailureCategory(StrEnum):
     CONNECTION = "connection"
     AUTHENTICATION = "authentication"
     BAD_REQUEST = "bad_request"
+    SCHEMA_INVALID = "schema_invalid"
     CANCELLED = "cancelled"
     UNKNOWN = "unknown"
 
@@ -63,6 +66,13 @@ class Failure:
     category: FailureCategory
     retryable: bool
     should_fallback: bool
+    #: Whether parking the task on the pause file can plausibly help. Pausing
+    #: is for trouble a human can repair mid-run (an expired key, an exhausted
+    #: quota, a provider outage) before sending the resume signal. A failure
+    #: that lives entirely in what the model already returned is not that:
+    #: waiting changes nothing, so the run must fail out to its caller rather
+    #: than hang until the pause deadline.
+    pausable: bool = True
 
 
 def extract_status_code(error: BaseException) -> int | None:
@@ -86,6 +96,12 @@ def classify_failure(error: BaseException) -> Failure:
     """Convert a provider/transport exception into explicit recovery decisions."""
     if isinstance(error, KeyboardInterrupt) or type(error).__name__ == "CancelledError":
         return Failure(FailureCategory.CANCELLED, False, False)
+
+    # A structured-output miss is about the content of a reply that already
+    # arrived, so no resume signal can change it: retry (resampling may well
+    # conform) and fall back (another model may conform), but never pause.
+    if isinstance(error, StructuredOutputError):
+        return Failure(FailureCategory.SCHEMA_INVALID, True, True, pausable=False)
 
     code = extract_status_code(error)
     message = str(error).lower()
@@ -159,6 +175,9 @@ _DEFAULT_RETRY_POLICIES: dict[FailureCategory, RetryPolicy] = {
     FailureCategory.TIMEOUT: RetryPolicy(max_attempts=3, base_delay=2.0, max_delay=15.0),
     FailureCategory.CONNECTION: RetryPolicy(max_attempts=3, base_delay=2.0, max_delay=15.0),
     FailureCategory.UNKNOWN: RetryPolicy(max_attempts=2, base_delay=1.0, max_delay=5.0),
+    # Resampling is the only lever, and it is cheap: try a couple more times
+    # with almost no delay, then hand over to the fallback or the caller.
+    FailureCategory.SCHEMA_INVALID: RetryPolicy(max_attempts=3, base_delay=0.5, max_delay=2.0),
     # Non-retryable categories get a single attempt by definition.
     FailureCategory.AUTHENTICATION: RetryPolicy(max_attempts=1, base_delay=0.0, max_delay=0.0),
     FailureCategory.BAD_REQUEST: RetryPolicy(max_attempts=1, base_delay=0.0, max_delay=0.0),

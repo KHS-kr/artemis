@@ -398,9 +398,11 @@ async def _run_with_recovery[T](
     - Non-retryable categories (auth, bad request) raise LLMPermanentError
       immediately: retrying cannot help and pausing would hang the task.
     - When retryable attempts are exhausted: if a fallback model is waiting
-      (with_fallback), raise LLMExhaustedError so it takes over immediately;
-      otherwise pause the task (bounded by settings.LLM_PAUSE_TIMEOUT_SECONDS)
-      and retry from scratch on resume.
+      (with_fallback), or the failure is not pausable (a malformed structured
+      reply, which no resume signal can fix), raise LLMExhaustedError so the
+      fallback or the caller takes over immediately; otherwise pause the task
+      (bounded by settings.LLM_PAUSE_TIMEOUT_SECONDS) and retry from scratch
+      on resume.
     """
     while True:
         request_token = _begin_llm_request(provider)
@@ -469,15 +471,20 @@ async def _run_with_recovery[T](
                         _ENDPOINT_BREAKER.record_success(endpoint_key)
                     return result
 
-            # Retryable attempts exhausted.
-            if _FALLBACK_AVAILABLE.get():
+            # Retryable attempts exhausted. Two ways out without pausing: a
+            # fallback endpoint is waiting, or the failure is one that pausing
+            # cannot repair (see Failure.pausable) - a human resume signal
+            # cannot change a reply the model has already given, so parking on
+            # the pause file would only hang the run until its deadline.
+            handover = "fallback" if _FALLBACK_AVAILABLE.get() else None
+            if handover or (last_failure is not None and not last_failure.pausable):
                 _record_llm_event(
                     "llm_gave_up",
                     {
                         "error": str(last_error)[:1000],
                         "category": last_failure.category.value,
                         "retryable": True,
-                        "handover": "fallback",
+                        "handover": handover or "caller",
                     },
                     status="failed",
                 )
